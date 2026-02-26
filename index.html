@@ -1,0 +1,493 @@
+<div class="results-panel">
+        <h3>📊 Calculated Outputs</h3>
+        <div class="results-grid">
+            <div class="result-item">
+                <div class="result-label">Effective Attrition Rate</div>
+                <div class="result-value" id="calc-attrition-rate">0%</div>
+                <div class="result-unit">blended rate</div>
+            </div>
+            <div class="result-item">
+                <div class="result-label">Effective Attendance Rate</div>
+                <div class="result-value" id="calc-attendance-rate">0%</div>
+                <div class="result-unit">blended rate</div>
+            </div>
+            <div class="result-item">
+                <div class="result-label">Effective Rate (UPH)</div>
+                <div class="result-value" id="calc-effective-rate">0</div>
+                <div class="result-unit">with UPB factor</div>
+            </div>
+            <div class="result-item">
+                <div class="result-label">Post-Attrition Headcount</div>
+                <div class="result-value" id="calc-headcount">0</div>
+                <div class="result-unit">people</div>
+            </div>
+            <div class="result-item">
+                <div class="result-label">Show Hours (<span id="showHoursPeriod">Week</span>)</div>
+                <div class="result-value" id="calc-show-hours">0</div>
+                <div class="result-unit">hours/<span id="showHoursPeriod2">week</span></div>
+            </div>
+            <div class="result-item">
+                <div class="result-label">Processing Capacity</div>
+                <div class="result-value" id="calc-capacity">0</div>
+                <div class="result-unit">units/<span id="capacityPeriod">week</span></div>
+            </div>
+        </div>
+        <div id="gap-indicator" class="gap-indicator gap-balanced">
+            ⚖️ Calculating...
+        </div>
+    </div>
+
+    <!-- COST SUMMARY PANEL -->
+    <div class="cost-summary-panel">
+        <h3>💰 Cost Analysis by Strategy</h3>
+        <div class="cost-grid" id="costGrid">
+            <!-- Dynamically populated -->
+        </div>
+    </div>
+
+    <!-- RECOMMENDATIONS PANEL -->
+    <div class="recommendations-panel">
+        <h3>💡 Action Recommendations with Cost Impact</h3>
+        <div class="recommendation-grid" id="recommendationGrid">
+            <!-- Dynamically populated -->
+        </div>
+    </div>
+</div>
+
+<script>
+    const state = {
+        mode: 'week',
+        assumptions: {
+            attritionBlue: 3,
+            attritionSeasonal: 8,
+            attritionMix: 'mixed',
+            attendanceWeekday: 95,
+            attendanceWeekend: 92,
+            attendancePattern: 'weekday',
+            rateUndiluted: 55,
+            rateDiluted: 45,
+            rateType: 'diluted',
+            fppSingles: 70,
+            fppMulti: 30,
+            upbPeak: 1.8,
+            upbNonpeak: 1.3,
+            upbSeason: 'nonpeak'
+        },
+        inputs: {
+            demand: 10000,
+            roster: 100,
+            basePay: 18
+        },
+        calculated: {
+            effectiveAttrition: 0,
+            effectiveAttendance: 0,
+            effectiveRate: 0,
+            upbFactor: 0
+        },
+        outputs: {
+            headcount: 0,
+            showHours: 0,
+            capacity: 0,
+            gap: 0,
+            newHires: 0,
+            vetHours: 0,
+            vtoHours: 0,
+            laborShareIn: 0,
+            laborShareOut: 0
+        },
+        costs: {
+            newHires: 0,
+            vet: 0,
+            vto: 0,
+            laborShare: 0,
+            fcReady: 0
+        }
+    };
+
+    const ONBOARDING_COST = 900;
+    const VET_MULTIPLIER = 1.5;
+    const VTO_SAVINGS_MULTIPLIER = 1.0;
+    const LABOR_SHARE_MULTIPLIER = 1.0;
+    const FC_READY_MULTIPLIER = 1.0;
+
+    window.addEventListener('load', function() {
+        calculate();
+    });
+
+    function toggleAssumptions() {
+        const content = document.getElementById('assumptionsContent');
+        const icon = document.getElementById('collapseIcon');
+        content.classList.toggle('hidden');
+        icon.classList.toggle('collapsed');
+    }
+
+    function updateMultis() {
+        const singles = parseFloat(document.getElementById('fpp-singles').value) || 0;
+        const multis = 100 - singles;
+        document.getElementById('fpp-multi').value = multis;
+        calculate();
+    }
+
+    function updateSingles() {
+        const multis = parseFloat(document.getElementById('fpp-multi').value) || 0;
+        const singles = 100 - multis;
+        document.getElementById('fpp-singles').value = singles;
+        calculate();
+    }
+
+    function setMode(mode) {
+        state.mode = mode;
+        document.getElementById('weekBtn').classList.toggle('active', mode === 'week');
+        document.getElementById('shiftBtn').classList.toggle('active', mode === 'shift');
+
+        const period = mode === 'week' ? 'Week' : 'Shift';
+        const periodLower = mode === 'week' ? 'week' : 'shift';
+
+        document.getElementById('modeIndicator').textContent = mode === 'week' ? '(Weekly Mode)' : '(Shift Mode - 12 hrs)';
+        document.getElementById('demandPeriod').textContent = period;
+        document.getElementById('showHoursPeriod').textContent = period;
+        document.getElementById('showHoursPeriod2').textContent = periodLower;
+        document.getElementById('capacityPeriod').textContent = periodLower;
+
+        calculate();
+    }
+
+    function getHoursPerPeriod() {
+        return state.mode === 'week' ? 40 : 12;
+    }
+
+    function calculate() {
+        // Get assumption values
+        state.assumptions.attritionBlue = parseFloat(document.getElementById('attrition-blue').value) || 0;
+        state.assumptions.attritionSeasonal = parseFloat(document.getElementById('attrition-seasonal').value) || 0;
+        state.assumptions.attritionMix = document.getElementById('attrition-mix').value;
+        state.assumptions.attendanceWeekday = parseFloat(document.getElementById('attendance-weekday').value) || 0;
+        state.assumptions.attendanceWeekend = parseFloat(document.getElementById('attendance-weekend').value) || 0;
+        state.assumptions.attendancePattern = document.getElementById('attendance-pattern').value;
+        state.assumptions.rateUndiluted = parseFloat(document.getElementById('rate-undiluted').value) || 0;
+        state.assumptions.rateDiluted = parseFloat(document.getElementById('rate-diluted').value) || 0;
+        state.assumptions.rateType = document.getElementById('rate-type').value;
+        state.assumptions.fppSingles = parseFloat(document.getElementById('fpp-singles').value) || 0;
+        state.assumptions.fppMulti = parseFloat(document.getElementById('fpp-multi').value) || 0;
+        state.assumptions.upbPeak = parseFloat(document.getElementById('upb-peak').value) || 0;
+        state.assumptions.upbNonpeak = parseFloat(document.getElementById('upb-nonpeak').value) || 0;
+        state.assumptions.upbSeason = document.getElementById('upb-season').value;
+
+        // Get input values
+        state.inputs.demand = parseFloat(document.getElementById('input-demand').value) || 0;
+        state.inputs.roster = parseFloat(document.getElementById('input-roster').value) || 0;
+        state.inputs.basePay = parseFloat(document.getElementById('input-base-pay').value) || 0;
+
+        // Calculate effective attrition based on mix
+        if (state.assumptions.attritionMix === 'blue') {
+            state.calculated.effectiveAttrition = state.assumptions.attritionBlue / 100;
+        } else if (state.assumptions.attritionMix === 'mixed') {
+            state.calculated.effectiveAttrition = (0.7 * state.assumptions.attritionBlue + 0.3 * state.assumptions.attritionSeasonal) / 100;
+        } else {
+            state.calculated.effectiveAttrition = (0.5 * state.assumptions.attritionBlue + 0.5 * state.assumptions.attritionSeasonal) / 100;
+        }
+
+        // Calculate effective attendance based on pattern
+        if (state.assumptions.attendancePattern === 'weekday') {
+            state.calculated.effectiveAttendance = (0.7 * state.assumptions.attendanceWeekday + 0.3 * state.assumptions.attendanceWeekend) / 100;
+        } else if (state.assumptions.attendancePattern === 'balanced') {
+            state.calculated.effectiveAttendance = (0.5 * state.assumptions.attendanceWeekday + 0.5 * state.assumptions.attendanceWeekend) / 100;
+        } else {
+            state.calculated.effectiveAttendance = (0.3 * state.assumptions.attendanceWeekday + 0.7 * state.assumptions.attendanceWeekend) / 100;
+        }
+
+        // Calculate effective rate
+        let baseRate;
+        if (state.assumptions.rateType === 'undiluted') {
+            baseRate = state.assumptions.rateUndiluted;
+        } else if (state.assumptions.rateType === 'diluted') {
+            baseRate = state.assumptions.rateDiluted;
+        } else {
+            baseRate = (state.assumptions.rateUndiluted + state.assumptions.rateDiluted) / 2;
+        }
+
+        // Apply UPB factor
+        state.calculated.upbFactor = state.assumptions.upbSeason === 'peak' ? state.assumptions.upbPeak : state.assumptions.upbNonpeak;
+        state.calculated.effectiveRate = baseRate * state.calculated.upbFactor;
+
+        const hoursPerPeriod = getHoursPerPeriod();
+
+        // Calculate core metrics
+        state.outputs.headcount = state.inputs.roster * (1 - state.calculated.effectiveAttrition);
+        state.outputs.showHours = state.outputs.headcount * hoursPerPeriod * state.calculated.effectiveAttendance;
+        state.outputs.capacity = state.calculated.effectiveRate * state.outputs.showHours;
+        state.outputs.gap = state.outputs.capacity - state.inputs.demand;
+
+        // Calculate action recommendations
+        const absGap = Math.abs(state.outputs.gap);
+        const avgHoursPerPerson = hoursPerPeriod * state.calculated.effectiveAttendance;
+
+        if (state.outputs.gap < 0) {
+            state.outputs.newHires = Math.ceil(absGap / (state.calculated.effectiveRate * avgHoursPerPerson));
+            state.outputs.vetHours = Math.ceil(absGap / state.calculated.effectiveRate);
+            state.outputs.laborShareIn = Math.ceil(absGap / (state.calculated.effectiveRate * avgHoursPerPerson));
+            state.outputs.vtoHours = 0;
+            state.outputs.laborShareOut = 0;
+
+            state.costs.newHires = (state.outputs.newHires * ONBOARDING_COST) + 
+                                   (state.outputs.newHires * avgHoursPerPerson * state.inputs.basePay);
+            state.costs.vet = state.outputs.vetHours * state.inputs.basePay * VET_MULTIPLIER;
+            state.costs.laborShare = state.outputs.laborShareIn * avgHoursPerPerson * state.inputs.basePay * LABOR_SHARE_MULTIPLIER;
+            state.costs.fcReady = state.outputs.vetHours * state.inputs.basePay * FC_READY_MULTIPLIER;
+            state.costs.vto = 0;
+        } else if (state.outputs.gap > 0) {
+            state.outputs.vtoHours = Math.ceil(absGap / state.calculated.effectiveRate);
+            state.outputs.laborShareOut = Math.ceil(absGap / (state.calculated.effectiveRate * avgHoursPerPerson));
+            state.outputs.newHires = 0;
+            state.outputs.vetHours = 0;
+            state.outputs.laborShareIn = 0;
+
+            state.costs.vto = -(state.outputs.vtoHours * state.inputs.basePay * VTO_SAVINGS_MULTIPLIER);
+            state.costs.laborShare = 0;
+            state.costs.newHires = 0;
+            state.costs.vet = 0;
+            state.costs.fcReady = 0;
+        } else {
+            state.outputs.newHires = 0;
+            state.outputs.vetHours = 0;
+            state.outputs.vtoHours = 0;
+            state.outputs.laborShareIn = 0;
+            state.outputs.laborShareOut = 0;
+            state.costs.newHires = 0;
+            state.costs.vet = 0;
+            state.costs.vto = 0;
+            state.costs.laborShare = 0;
+            state.costs.fcReady = 0;
+        }
+
+        updateDisplays();
+    }
+
+    function formatCurrency(value) {
+        return new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 0
+        }).format(value);
+    }
+
+    function updateDisplays() {
+        const periodLabel = state.mode === 'week' ? 'week' : 'shift';
+
+        // Update calculated assumption displays
+        document.getElementById('calc-attrition-rate').textContent = (state.calculated.effectiveAttrition * 100).toFixed(1) + '%';
+        document.getElementById('calc-attendance-rate').textContent = (state.calculated.effectiveAttendance * 100).toFixed(1) + '%';
+        document.getElementById('calc-effective-rate').textContent = state.calculated.effectiveRate.toFixed(1);
+
+        // Update results
+        document.getElementById('calc-headcount').textContent = state.outputs.headcount.toFixed(1);
+        document.getElementById('calc-show-hours').textContent = state.outputs.showHours.toFixed(0);
+        document.getElementById('calc-capacity').textContent = state.outputs.capacity.toLocaleString();
+
+        // Update gap indicator
+        const gapIndicator = document.getElementById('gap-indicator');
+        const gapPercent = (state.outputs.gap / state.inputs.demand) * 100;
+
+        if (Math.abs(gapPercent) < 5) {
+            gapIndicator.className = 'gap-indicator gap-balanced';
+            gapIndicator.innerHTML = `⚖️ Capacity Balanced with Demand<br><small>Gap: ${state.outputs.gap.toFixed(0)} units (${gapPercent.toFixed(1)}%)</small>`;
+        } else if (gapPercent > 0) {
+            gapIndicator.className = 'gap-indicator gap-positive';
+            gapIndicator.innerHTML = `📈 Excess Capacity<br><small>Surplus: ${state.outputs.gap.toFixed(0)} units (${gapPercent.toFixed(1)}%)</small>`;
+        } else {
+            gapIndicator.className = 'gap-indicator gap-negative';
+            gapIndicator.innerHTML = `📉 Capacity Shortage<br><small>Deficit: ${Math.abs(state.outputs.gap).toFixed(0)} units (${Math.abs(gapPercent).toFixed(1)}%)</small>`;
+        }
+
+        updateCostSummary();
+        updateRecommendations();
+    }
+
+    function updateCostSummary() {
+        const grid = document.getElementById('costGrid');
+        const gapPercent = (state.outputs.gap / state.inputs.demand) * 100;
+        const periodLabel = state.mode === 'week' ? 'week' : 'shift';
+
+        if (Math.abs(gapPercent) < 5) {
+            grid.innerHTML = `
+                <div class="cost-item">
+                    <div class="cost-item-header">
+                        <span class="cost-label">Current Status</span>
+                        <span class="cost-badge neutral">BALANCED</span>
+                    </div>
+                    <div class="cost-value">$0</div>
+                    <div class="cost-breakdown">
+                        No additional labor costs needed. Capacity is balanced with demand using current assumptions.
+                    </div>
+                </div>
+            `;
+        } else if (state.outputs.gap < 0) {
+            grid.innerHTML = `
+                <div class="cost-item">
+                    <div class="cost-item-header">
+                        <span class="cost-label">New Hires</span>
+                        <span class="cost-badge increase">+COST</span>
+                    </div>
+                    <div class="cost-value">${formatCurrency(state.costs.newHires)}</div>
+                    <div class="cost-breakdown">
+                        ${state.outputs.newHires} people × ($900 onboarding + salary/${periodLabel})
+                    </div>
+                </div>
+                <div class="cost-item">
+                    <div class="cost-item-header">
+                        <span class="cost-label">VET (1.5x Pay)</span>
+                        <span class="cost-badge increase">+COST</span>
+                    </div>
+                    <div class="cost-value">${formatCurrency(state.costs.vet)}</div>
+                    <div class="cost-breakdown">
+                        ${state.outputs.vetHours} hours × ${formatCurrency(state.inputs.basePay * VET_MULTIPLIER)}/hr
+                    </div>
+                </div>
+                <div class="cost-item">
+                    <div class="cost-item-header">
+                        <span class="cost-label">Labor Share In</span>
+                        <span class="cost-badge neutral">NEUTRAL</span>
+                    </div>
+                    <div class="cost-value">${formatCurrency(state.costs.laborShare)}</div>
+                    <div class="cost-breakdown">
+                        ${state.outputs.laborShareIn} people × ${formatCurrency(state.inputs.basePay)}/hr (no premium)
+                    </div>
+                </div>
+                <div class="cost-item">
+                    <div class="cost-item-header">
+                        <span class="cost-label">FC Ready/Flex</span>
+                        <span class="cost-badge increase">+COST</span>
+                    </div>
+                    <div class="cost-value">${formatCurrency(state.costs.fcReady)}</div>
+                    <div class="cost-breakdown">
+                        ${state.outputs.vetHours} hours × ${formatCurrency(state.inputs.basePay)}/hr base pay
+                    </div>
+                </div>
+            `;
+        } else {
+            grid.innerHTML = `
+                <div class="cost-item">
+                    <div class="cost-item-header">
+                        <span class="cost-label">VTO Savings</span>
+                        <span class="cost-badge decrease">-SAVINGS</span>
+                    </div>
+                    <div class="cost-value">${formatCurrency(Math.abs(state.costs.vto))}</div>
+                    <div class="cost-breakdown">
+                        ${state.outputs.vtoHours} hours × ${formatCurrency(state.inputs.basePay)} saved
+                    </div>
+                </div>
+                <div class="cost-item">
+                    <div class="cost-item-header">
+                        <span class="cost-label">Labor Share Out</span>
+                        <span class="cost-badge neutral">NEUTRAL</span>
+                    </div>
+                    <div class="cost-value">$0</div>
+                    <div class="cost-breakdown">
+                        ${state.outputs.laborShareOut} people shared (cost neutral)
+                    </div>
+                </div>
+                <div class="cost-item">
+                    <div class="cost-item-header">
+                        <span class="cost-label">Hiring Freeze</span>
+                        <span class="cost-badge decrease">-SAVINGS</span>
+                    </div>
+                    <div class="cost-value">$900+</div>
+                    <div class="cost-breakdown">
+                        Avoid onboarding costs and reduce attrition impact
+                    </div>
+                </div>
+            `;
+        }
+    }
+
+    function updateRecommendations() {
+        const grid = document.getElementById('recommendationGrid');
+        const gapPercent = (state.outputs.gap / state.inputs.demand) * 100;
+        const periodLabel = state.mode === 'week' ? 'week' : 'shift';
+
+        if (Math.abs(gapPercent) < 5) {
+            grid.innerHTML = `
+                <div class="recommendation-item balanced">
+                    <div class="recommendation-title">✅ Status</div>
+                    <div class="recommendation-value">Balanced</div>
+                    <div class="recommendation-cost">$0 Additional Cost</div>
+                    <div class="recommendation-description">
+                        Capacity matches demand within ±5% using configured assumptions (${state.assumptions.fppSingles}% Singles / ${state.assumptions.fppMulti}% Multis). Continue monitoring.
+                    </div>
+                </div>
+            `;
+        } else if (state.outputs.gap < 0) {
+            grid.innerHTML = `
+                <div class="recommendation-item increase">
+                    <div class="recommendation-title">👥 New Hires</div>
+                    <div class="recommendation-value">${state.outputs.newHires}</div>
+                    <div class="recommendation-cost">${formatCurrency(state.costs.newHires)}/${periodLabel}</div>
+                    <div class="recommendation-description">
+                        Based on ${state.calculated.effectiveRate.toFixed(1)} UPH effective rate (${state.assumptions.rateType} with ${state.calculated.upbFactor}x UPB). Flow: ${state.assumptions.fppSingles}% Singles / ${state.assumptions.fppMulti}% Multis.
+                    </div>
+                </div>
+                <div class="recommendation-item increase">
+                    <div class="recommendation-title">⏰ VET - 1.5x Pay</div>
+                    <div class="recommendation-value">${state.outputs.vetHours} hrs</div>
+                    <div class="recommendation-cost">${formatCurrency(state.costs.vet)}/${periodLabel}</div>
+                    <div class="recommendation-description">
+                        Quick capacity boost at ${formatCurrency(state.inputs.basePay * VET_MULTIPLIER)}/hr
+                    </div>
+                </div>
+                <div class="recommendation-item increase">
+                    <div class="recommendation-title">🔄 Labor Share In</div>
+                    <div class="recommendation-value">${state.outputs.laborShareIn}</div>
+                    <div class="recommendation-cost">${formatCurrency(state.costs.laborShare)}/${periodLabel}</div>
+                    <div class="recommendation-description">
+                        Standard pay (${formatCurrency(state.inputs.basePay)}/hr), no premium
+                    </div>
+                </div>
+            `;
+        } else {
+            grid.innerHTML = `
+                <div class="recommendation-item decrease">
+                    <div class="recommendation-title">🏖️ VTO</div>
+                    <div class="recommendation-value">${state.outputs.vtoHours} hrs</div>
+                    <div class="recommendation-cost">${formatCurrency(Math.abs(state.costs.vto))} Saved</div>
+                    <div class="recommendation-description">
+                        Saves ${formatCurrency(state.inputs.basePay)}/hr in labor costs
+                    </div>
+                </div>
+                <div class="recommendation-item decrease">
+                    <div class="recommendation-title">🔄 Labor Share Out</div>
+                    <div class="recommendation-value">${state.outputs.laborShareOut}</div>
+                    <div class="recommendation-cost">$0 Impact</div>
+                    <div class="recommendation-description">
+                        Share associates with sites experiencing shortages
+                    </div>
+                </div>
+            `;
+        }
+    }
+
+    function resetValues() {
+        // Reset assumptions
+        document.getElementById('attrition-blue').value = 3;
+        document.getElementById('attrition-seasonal').value = 8;
+        document.getElementById('attrition-mix').value = 'mixed';
+        document.getElementById('attendance-weekday').value = 95;
+        document.getElementById('attendance-weekend').value = 92;
+        document.getElementById('attendance-pattern').value = 'weekday';
+        document.getElementById('rate-undiluted').value = 55;
+        document.getElementById('rate-diluted').value = 45;
+        document.getElementById('rate-type').value = 'diluted';
+        document.getElementById('fpp-singles').value = 70;
+        document.getElementById('fpp-multi').value = 30;
+        document.getElementById('upb-peak').value = 1.8;
+        document.getElementById('upb-nonpeak').value = 1.3;
+        document.getElementById('upb-season').value = 'nonpeak';
+
+        // Reset inputs
+        document.getElementById('input-demand').value = 10000;
+        document.getElementById('input-roster').value = 100;
+        document.getElementById('input-base-pay').value = 18;
+
+        calculate();
+    }
+</script>
